@@ -1,8 +1,9 @@
-import React, { FormEvent, useEffect, useState } from 'react';
+import React, { FormEvent, useEffect, useRef, useState } from 'react';
 import {
   ArrowLeft,
   Building2,
   CheckCircle2,
+  ChevronDown,
   FileCheck2,
   Loader2,
   MessageCircle,
@@ -10,15 +11,7 @@ import {
   UserRound,
   X,
 } from 'lucide-react';
-
-type GstStatus = 'yes' | 'no';
-
-export interface RegistrationDetails {
-  fullName: string;
-  businessName: string;
-  hasGst: GstStatus;
-  whatsappNumber: string;
-}
+import { BUSINESS_CATEGORIES, GstStatus, RegistrationDetails } from '../types/registration';
 
 interface RegistrationModalProps {
   initialName?: string;
@@ -37,6 +30,7 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({
   const [details, setDetails] = useState<RegistrationDetails>({
     fullName: initialName,
     businessName: '',
+    industry: '',
     hasGst: 'no',
     whatsappNumber: '',
   });
@@ -46,6 +40,8 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [developmentOtp, setDevelopmentOtp] = useState('');
+  const [isCategoryOpen, setIsCategoryOpen] = useState(false);
+  const categoryRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (cooldown <= 0) return undefined;
@@ -54,6 +50,17 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({
     }, 1000);
     return () => window.clearInterval(timer);
   }, [cooldown]);
+
+  useEffect(() => {
+    const closeCategoryMenu = (event: MouseEvent) => {
+      if (!categoryRef.current?.contains(event.target as Node)) {
+        setIsCategoryOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', closeCategoryMenu);
+    return () => document.removeEventListener('mousedown', closeCategoryMenu);
+  }, []);
 
   const updateDetails = <K extends keyof RegistrationDetails>(
     field: K,
@@ -161,6 +168,50 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({
               autoComplete="organization"
               required
             />
+
+            <div ref={categoryRef} className="relative block">
+              <span className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-black/60">
+                <Building2 className="h-4 w-4" /> Business category
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsCategoryOpen((open) => !open)}
+                aria-haspopup="listbox"
+                aria-expanded={isCategoryOpen}
+                className="flex w-full items-center justify-between gap-3 rounded-xl border border-[#d9e8df] bg-white/70 px-4 py-3 text-left text-sm font-bold text-black outline-none transition-colors hover:border-[#1b9e4b] focus:border-[#1b9e4b]"
+              >
+                <span className={details.industry ? 'text-black' : 'font-medium text-black/35'}>
+                  {details.industry || 'Select your business category'}
+                </span>
+                <ChevronDown className={`h-4 w-4 shrink-0 transition-transform ${isCategoryOpen ? 'rotate-180' : ''}`} />
+              </button>
+
+              {isCategoryOpen && (
+                <div
+                  role="listbox"
+                  aria-label="Business category"
+                  className="absolute left-0 right-0 top-full z-30 mt-2 max-h-56 overflow-y-auto rounded-xl border border-[#d9e8df] bg-[#f5fff8] p-1 shadow-2xl"
+                >
+                  {BUSINESS_CATEGORIES.map((category) => (
+                    <button
+                      key={category}
+                      type="button"
+                      role="option"
+                      aria-selected={details.industry === category}
+                      onClick={() => {
+                        updateDetails('industry', category);
+                        setIsCategoryOpen(false);
+                      }}
+                      className={`block w-full rounded-lg px-3 py-2.5 text-left text-sm font-semibold transition-colors hover:bg-[#e6f8e6] ${
+                        details.industry === category ? 'bg-[#e6f8e6] text-[#126b34]' : 'text-black'
+                      }`}
+                    >
+                      {category}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
 
             <fieldset>
               <legend className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-black/60">

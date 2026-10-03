@@ -6,6 +6,7 @@ import {
   ScoreFloatingText,
   SaaSProductId,
 } from '../types/game';
+import { RegistrationDetails } from '../types/registration';
 import {
   createInitialBoard,
   swapTilesOnBoard,
@@ -346,12 +347,20 @@ export function useGameEngine() {
     [resolveCascades, isSessionActive, setBusyState]
   );
 
-  const saveScoreToLeaderboard = async (playerName: string) => {
+  const saveScoreToLeaderboard = async (
+    playerName: string,
+    registration?: RegistrationDetails | null
+  ) => {
     const response = await fetch('/api/scores', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         playerName,
+        fullName: registration?.fullName || playerName,
+        businessName: registration?.businessName,
+        industry: registration?.industry,
+        hasGst: registration?.hasGst,
+        whatsappNumber: registration?.whatsappNumber,
         score,
         maxCombo,
         totalMatches,

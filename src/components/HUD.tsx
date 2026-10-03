@@ -57,7 +57,15 @@ export const HUD: React.FC<HUDProps> = ({
           </div>
         </div>
 
-        <div className="mt-3 grid grid-cols-3 gap-2 rounded-[24px] border border-[#d9e8df] bg-[#f5fff8] p-2 shadow-lg">
+        <div className="mt-3 grid grid-cols-4 gap-1 rounded-[24px] border border-[#d9e8df] bg-[#f5fff8] p-2 shadow-lg sm:gap-2">
+          <button
+            onClick={onOpenCodex}
+            title="SaaS Product Codex"
+            className="flex min-h-10 items-center justify-center gap-1 rounded-2xl border border-[#d9e8df] bg-[#f5fff8] px-1 text-[8px] font-bold uppercase tracking-wide text-black shadow-sm transition-colors hover:bg-[#e6f8e6] min-[380px]:text-[9px]"
+          >
+            <BookOpen className="h-4 w-4 shrink-0" />
+            <span>Codex</span>
+          </button>
           <button
             onClick={onOpenLeaderboard}
             title="Leaderboard"

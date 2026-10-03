@@ -8,7 +8,9 @@ import { ProductPopup } from './components/ProductPopup';
 import { ProductCodexModal } from './components/ProductCodex';
 import { GameOverModal } from './components/GameOverModal';
 import { LeaderboardModal } from './components/LeaderboardModal';
-import { RegistrationDetails, RegistrationModal } from './components/RegistrationModal';
+import { RegistrationModal } from './components/RegistrationModal';
+import { AdminPage } from './components/AdminPage';
+import { RegistrationDetails } from './types/registration';
 import { GameMode, SaaSProductId } from './types/game';
 import { Play, RotateCcw, BookOpen } from 'lucide-react';
 
@@ -45,6 +47,7 @@ export default function App() {
   const [showLeaderboard, setShowLeaderboard] = useState<boolean>(false);
   const [showRegistration, setShowRegistration] = useState<boolean>(false);
   const [pendingGameMode, setPendingGameMode] = useState<GameMode>('timed');
+  const [registration, setRegistration] = useState<RegistrationDetails | null>(null);
   const [playerName, setPlayerName] = useState<string>(() => {
     try {
       const storedName = window.localStorage.getItem('tech-expo-player-name');
@@ -77,10 +80,15 @@ export default function App() {
   }, []);
 
   const handleRegistrationVerified = useCallback((details: RegistrationDetails) => {
+    setRegistration(details);
     setPlayerName(details.fullName);
     setShowRegistration(false);
     startGame(pendingGameMode);
   }, [pendingGameMode, startGame]);
+
+  const saveCurrentScore = useCallback((name: string) => {
+    return saveScoreToLeaderboard(name, registration);
+  }, [registration, saveScoreToLeaderboard]);
 
   const handleProductPreviewClick = useCallback((id: SaaSProductId) => {
     if (id === 2) {
@@ -92,6 +100,10 @@ export default function App() {
   }, [openCodexWithProduct, requestGameStart]);
 
   const isGameActive = status === 'playing' || status === 'paused';
+
+  if (window.location.pathname.replace(/\/+$/, '') === '/admin') {
+    return <AdminPage />;
+  }
 
   return (
     <div className="relative flex min-h-dvh flex-col overflow-x-hidden bg-[#f5fff8] font-sans text-black selection:bg-[#1b9e4b] selection:text-black">
@@ -211,7 +223,7 @@ export default function App() {
             mode={mode}
             onOpenCodex={() => openCodexWithProduct(0)}
             onOpenLeaderboard={() => setShowLeaderboard(true)}
-            onSaveScore={saveScoreToLeaderboard}
+            onSaveScore={saveCurrentScore}
             initialPlayerName={playerName}
           />
         )}

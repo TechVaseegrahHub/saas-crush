@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import dns from 'node:dns';
 import { MongoClient, ServerApiVersion } from 'mongodb';
 import {
@@ -30,11 +30,25 @@ const mongoUri = process.env.MONGODB_URI?.trim();
 const mongoDbName = process.env.MONGODB_DB_NAME ?? 'saas_crush';
 const mongoCollectionName = process.env.MONGODB_COLLECTION_NAME ?? 'expo_leads';
 const mongoOtpCollectionName = process.env.MONGODB_OTP_COLLECTION_NAME ?? 'otp_challenges';
+const adminPassword = process.env.ADMIN_PASSWORD?.trim();
+const BUSINESS_CATEGORIES = [
+  'Retail & E-commerce',
+  'Food & Restaurant',
+  'Education & Training',
+  'Healthcare',
+  'Fashion & Clothing',
+  'Beauty & Salon',
+  'Real Estate',
+  'Professional Services',
+  'Manufacturing',
+  'Agriculture',
+] as const;
 
 type OtpChallenge = {
   _id: string;
   fullName: string;
   businessName: string;
+  industry: string;
   hasGst: 'yes' | 'no';
   whatsappNumber: string;
   otpHash: string;
@@ -122,9 +136,39 @@ function userAgent(req: ApiRequest) {
   return typeof value === 'string' ? value : '';
 }
 
+function isAdminAuthorized(req: ApiRequest) {
+  if (!adminPassword) return false;
+  const suppliedKey = req.headers?.['x-admin-key'];
+  const key = Array.isArray(suppliedKey) ? suppliedKey[0] : suppliedKey;
+  if (typeof key !== 'string' || !key) return false;
+
+  const expectedHash = createHash('sha256').update(adminPassword).digest();
+  const suppliedHash = createHash('sha256').update(key).digest();
+  return timingSafeEqual(expectedHash, suppliedHash);
+}
+
+function mapAdminRecord(record: any) {
+  return {
+    id: String(record._id),
+    recordType: record.recordType ?? (typeof record.score === 'number' ? 'score' : 'registration'),
+    fullName: record.fullName ?? '',
+    businessName: record.businessName ?? '',
+    industry: record.industry ?? '',
+    hasGst: record.hasGst ?? 'no',
+    whatsappNumber: record.whatsappNumber ?? '',
+    ...(typeof record.score === 'number' ? { score: record.score } : {}),
+    ...(typeof record.maxCombo === 'number' ? { maxCombo: record.maxCombo } : {}),
+    ...(typeof record.totalMatches === 'number' ? { totalMatches: record.totalMatches } : {}),
+    ...(record.mode ? { mode: record.mode } : {}),
+    ...(record.createdAt ? { createdAt: record.createdAt } : {}),
+    ...(record.verifiedAt ? { verifiedAt: record.verifiedAt } : {}),
+  };
+}
+
 function validateRegistration(body: RequestBody) {
   const fullName = cleanText(body.fullName);
   const businessName = cleanText(body.businessName);
+  const industry = cleanText(body.industry);
   const hasGst = body.hasGst === 'yes' || body.hasGst === 'no' ? body.hasGst : '';
   const whatsappNumber = normalizeWhatsAppNumber(
     body.whatsappNumber,
@@ -137,6 +181,9 @@ function validateRegistration(body: RequestBody) {
   if (!businessName || businessName.length > 120) {
     return { error: 'Please enter your business name.' };
   }
+  if (!BUSINESS_CATEGORIES.some((category) => category === industry)) {
+    return { error: 'Please choose your business category.' };
+  }
   if (!hasGst) {
     return { error: 'Please choose whether you have GST.' };
   }
@@ -144,7 +191,7 @@ function validateRegistration(body: RequestBody) {
     return { error: 'Please enter a valid WhatsApp number.' };
   }
 
-  return { fullName, businessName, hasGst, whatsappNumber } as const;
+  return { fullName, businessName, industry, hasGst, whatsappNumber } as const;
 }
 
 async function handleSendOtp(req: ApiRequest, res: ApiResponse) {
@@ -209,6 +256,7 @@ async function handleVerifyOtp(req: ApiRequest, res: ApiResponse) {
       recordType: 'registration',
       fullName: challenge.fullName,
       businessName: challenge.businessName,
+      industry: challenge.industry,
       hasGst: challenge.hasGst,
       whatsappNumber: challenge.whatsappNumber,
       verifiedAt: new Date(),
@@ -261,9 +309,57 @@ async function handleLeaderboard(res: ApiResponse) {
   }
 }
 
+async function handleAdminLeads(req: ApiRequest, res: ApiResponse) {
+  if (!adminPassword) {
+    return res.status(503).json({ message: 'Admin access is not configured.' });
+  }
+
+  if (!isAdminAuthorized(req)) {
+    return res.status(401).json({ message: 'Invalid admin key.' });
+  }
+
+  try {
+    const collection = await getLeadsCollection();
+    const records = await collection
+      .find({
+        fullName: { $type: 'string', $ne: '' },
+        businessName: { $type: 'string', $ne: '' },
+      })
+      .project({
+        fullName: 1,
+        businessName: 1,
+        industry: 1,
+        hasGst: 1,
+        whatsappNumber: 1,
+        recordType: 1,
+        score: 1,
+        maxCombo: 1,
+        totalMatches: 1,
+        mode: 1,
+        createdAt: 1,
+        verifiedAt: 1,
+      })
+      .sort({ createdAt: -1 })
+      .limit(200)
+      .toArray();
+
+    return res.json({ entries: records.map(mapAdminRecord) });
+  } catch (error) {
+    console.error('[database] Vercel admin records load failed', error);
+    return res.status(503).json({ message: databaseErrorMessage() });
+  }
+}
+
 async function handleScore(req: ApiRequest, res: ApiResponse) {
   const body = requestBody(req);
   const playerName = cleanText(body.playerName);
+  const businessName = cleanText(body.businessName);
+  const industry = cleanText(body.industry);
+  const hasGst = body.hasGst === 'yes' || body.hasGst === 'no' ? body.hasGst : '';
+  const whatsappNumber = normalizeWhatsAppNumber(
+    body.whatsappNumber,
+    cleanText(process.env.WHATSAPP_COUNTRY_CODE) || '91'
+  );
   const score = Number(body.score);
   const maxCombo = Number(body.maxCombo);
   const totalMatches = Number(body.totalMatches);
@@ -271,6 +367,14 @@ async function handleScore(req: ApiRequest, res: ApiResponse) {
 
   if (!playerName || playerName.length > 80) {
     return res.status(400).json({ message: 'Please enter a valid player name.' });
+  }
+
+  if (!businessName || businessName.length > 120) {
+    return res.status(400).json({ message: 'Registration details are missing.' });
+  }
+
+  if (!BUSINESS_CATEGORIES.some((category) => category === industry) || !hasGst || !whatsappNumber) {
+    return res.status(400).json({ message: 'Registration details are invalid.' });
   }
 
   if (!Number.isFinite(score) || score <= 0) {
@@ -281,6 +385,10 @@ async function handleScore(req: ApiRequest, res: ApiResponse) {
     const collection = await getLeadsCollection();
     const scoreFields = {
       fullName: playerName,
+      businessName,
+      industry,
+      hasGst,
+      whatsappNumber,
       score,
       maxCombo: Number.isFinite(maxCombo) ? maxCombo : 0,
       totalMatches: Number.isFinite(totalMatches) ? totalMatches : 0,
@@ -325,6 +433,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
 
   if (pathname === '/api/leaderboard' && method === 'GET') {
     return handleLeaderboard(res);
+  }
+
+  if (pathname === '/api/admin/leads' && method === 'GET') {
+    return handleAdminLeads(req, res);
   }
 
   if (pathname === '/api/scores' && method === 'POST') {

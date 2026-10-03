@@ -1,6 +1,6 @@
 import { config as loadEnv } from 'dotenv';
 import express from 'express';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import dns from 'node:dns';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,6 +48,19 @@ const mongoUri = process.env.MONGODB_URI?.trim();
 const mongoDbName = process.env.MONGODB_DB_NAME ?? 'saas_crush';
 const mongoCollectionName = process.env.MONGODB_COLLECTION_NAME ?? 'expo_leads';
 const mongoOtpCollectionName = process.env.MONGODB_OTP_COLLECTION_NAME ?? 'otp_challenges';
+const adminPassword = process.env.ADMIN_PASSWORD?.trim();
+const BUSINESS_CATEGORIES = [
+  'Retail & E-commerce',
+  'Food & Restaurant',
+  'Education & Training',
+  'Healthcare',
+  'Fashion & Clothing',
+  'Beauty & Salon',
+  'Real Estate',
+  'Professional Services',
+  'Manufacturing',
+  'Agriculture',
+] as const;
 
 const app = express();
 app.use(express.json({ limit: '20kb' }));
@@ -67,6 +80,7 @@ type OtpChallenge = {
   _id: string;
   fullName: string;
   businessName: string;
+  industry: string;
   hasGst: 'yes' | 'no';
   whatsappNumber: string;
   otpHash: string;
@@ -103,6 +117,31 @@ function databaseErrorMessage() {
     : 'Database is not configured for this deployment.';
 }
 
+function isAdminAuthorized(suppliedKey: string) {
+  if (!adminPassword || !suppliedKey) return false;
+  const expectedHash = createHash('sha256').update(adminPassword).digest();
+  const suppliedHash = createHash('sha256').update(suppliedKey).digest();
+  return timingSafeEqual(expectedHash, suppliedHash);
+}
+
+function mapAdminRecord(record: any) {
+  return {
+    id: String(record._id),
+    recordType: record.recordType ?? (typeof record.score === 'number' ? 'score' : 'registration'),
+    fullName: record.fullName ?? '',
+    businessName: record.businessName ?? '',
+    industry: record.industry ?? '',
+    hasGst: record.hasGst ?? 'no',
+    whatsappNumber: record.whatsappNumber ?? '',
+    ...(typeof record.score === 'number' ? { score: record.score } : {}),
+    ...(typeof record.maxCombo === 'number' ? { maxCombo: record.maxCombo } : {}),
+    ...(typeof record.totalMatches === 'number' ? { totalMatches: record.totalMatches } : {}),
+    ...(record.mode ? { mode: record.mode } : {}),
+    ...(record.createdAt ? { createdAt: record.createdAt } : {}),
+    ...(record.verifiedAt ? { verifiedAt: record.verifiedAt } : {}),
+  };
+}
+
 async function getOtpCollection() {
   if (!mongoUri) {
     throw new Error('MONGODB_URI is not configured.');
@@ -128,6 +167,7 @@ async function getOtpCollection() {
 function validateRegistration(body: any) {
   const fullName = cleanText(body?.fullName);
   const businessName = cleanText(body?.businessName);
+  const industry = cleanText(body?.industry);
   const hasGst = body?.hasGst === 'yes' || body?.hasGst === 'no' ? body.hasGst : '';
   const whatsappNumber = normalizeWhatsAppNumber(
     body?.whatsappNumber,
@@ -140,6 +180,9 @@ function validateRegistration(body: any) {
   if (!businessName || businessName.length > 120) {
     return { error: 'Please enter your business name.' };
   }
+  if (!BUSINESS_CATEGORIES.some((category) => category === industry)) {
+    return { error: 'Please choose your business category.' };
+  }
   if (!hasGst) {
     return { error: 'Please choose whether you have GST.' };
   }
@@ -147,7 +190,7 @@ function validateRegistration(body: any) {
     return { error: 'Please enter a valid WhatsApp number.' };
   }
 
-  return { fullName, businessName, hasGst, whatsappNumber } as const;
+  return { fullName, businessName, industry, hasGst, whatsappNumber } as const;
 }
 
 async function saveOtpChallenge(challenge: OtpChallenge) {
@@ -257,6 +300,7 @@ app.post('/api/otp/verify', async (req, res) => {
       recordType: 'registration',
       fullName: challenge.fullName,
       businessName: challenge.businessName,
+      industry: challenge.industry,
       hasGst: challenge.hasGst,
       whatsappNumber: challenge.whatsappNumber,
       verifiedAt,
@@ -352,8 +396,70 @@ app.get('/api/leaderboard', async (_req, res) => {
   }
 });
 
+app.get('/api/admin/leads', async (req, res) => {
+  if (!adminPassword) {
+    return res.status(503).json({ message: 'Admin access is not configured.' });
+  }
+
+  if (!isAdminAuthorized(req.get('x-admin-key') ?? '')) {
+    return res.status(401).json({ message: 'Invalid admin key.' });
+  }
+
+  try {
+    try {
+      const collection = await getLeadsCollection();
+      const records = await collection
+        .find({
+          fullName: { $type: 'string', $ne: '' },
+          businessName: { $type: 'string', $ne: '' },
+        })
+        .project({
+          fullName: 1,
+          businessName: 1,
+          industry: 1,
+          hasGst: 1,
+          whatsappNumber: 1,
+          recordType: 1,
+          score: 1,
+          maxCombo: 1,
+          totalMatches: 1,
+          mode: 1,
+          createdAt: 1,
+          verifiedAt: 1,
+        })
+        .sort({ createdAt: -1 })
+        .limit(200)
+        .toArray();
+
+      return res.json({ entries: records.map(mapAdminRecord) });
+    } catch (error) {
+      console.error('[database] Failed to load admin records', error);
+      if (!allowInMemoryFallback) {
+        return res.status(503).json({ message: databaseErrorMessage() });
+      }
+
+      const records = inMemoryRecords
+        .filter((record) => record.fullName && record.businessName)
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        .slice(0, 200);
+
+      return res.json({ entries: records.map(mapAdminRecord) });
+    }
+  } catch (error) {
+    console.error('Failed to load admin records', error);
+    return res.status(500).json({ message: 'Could not load customer data.' });
+  }
+});
+
 app.post('/api/scores', async (req, res) => {
   const playerName = cleanText(req.body?.playerName);
+  const businessName = cleanText(req.body?.businessName);
+  const industry = cleanText(req.body?.industry);
+  const hasGst = req.body?.hasGst === 'yes' || req.body?.hasGst === 'no' ? req.body.hasGst : '';
+  const whatsappNumber = normalizeWhatsAppNumber(
+    req.body?.whatsappNumber,
+    cleanText(process.env.WHATSAPP_COUNTRY_CODE) || '91'
+  );
   const score = Number(req.body?.score);
   const maxCombo = Number(req.body?.maxCombo);
   const totalMatches = Number(req.body?.totalMatches);
@@ -361,6 +467,14 @@ app.post('/api/scores', async (req, res) => {
 
   if (!playerName || playerName.length > 80) {
     return res.status(400).json({ message: 'Please enter a valid player name.' });
+  }
+
+  if (!businessName || businessName.length > 120) {
+    return res.status(400).json({ message: 'Registration details are missing.' });
+  }
+
+  if (!BUSINESS_CATEGORIES.some((category) => category === industry) || !hasGst || !whatsappNumber) {
+    return res.status(400).json({ message: 'Registration details are invalid.' });
   }
 
   if (!Number.isFinite(score) || score <= 0) {
@@ -372,6 +486,10 @@ app.post('/api/scores', async (req, res) => {
       const collection = await getLeadsCollection();
       const scoreFields = {
         fullName: playerName,
+        businessName,
+        industry,
+        hasGst,
+        whatsappNumber,
         score,
         maxCombo: Number.isFinite(maxCombo) ? maxCombo : 0,
         totalMatches: Number.isFinite(totalMatches) ? totalMatches : 0,
@@ -396,6 +514,10 @@ app.post('/api/scores', async (req, res) => {
       inMemoryRecords.push({
         _id: id,
         fullName: playerName,
+        businessName,
+        industry,
+        hasGst,
+        whatsappNumber,
         score,
         maxCombo: Number.isFinite(maxCombo) ? maxCombo : 0,
         totalMatches: Number.isFinite(totalMatches) ? totalMatches : 0,
