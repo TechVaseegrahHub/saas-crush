@@ -8,6 +8,7 @@ import { ProductPopup } from './components/ProductPopup';
 import { ProductCodexModal } from './components/ProductCodex';
 import { GameOverModal } from './components/GameOverModal';
 import { LeaderboardModal } from './components/LeaderboardModal';
+import { RegistrationDetails, RegistrationModal } from './components/RegistrationModal';
 import { GameMode, SaaSProductId } from './types/game';
 import { Play, RotateCcw, BookOpen } from 'lucide-react';
 
@@ -42,6 +43,8 @@ export default function App() {
   const [showCodex, setShowCodex] = useState<boolean>(false);
   const [codexInitialId, setCodexInitialId] = useState<SaaSProductId>(0);
   const [showLeaderboard, setShowLeaderboard] = useState<boolean>(false);
+  const [showRegistration, setShowRegistration] = useState<boolean>(false);
+  const [pendingGameMode, setPendingGameMode] = useState<GameMode>('timed');
   const [playerName, setPlayerName] = useState<string>(() => {
     try {
       const storedName = window.localStorage.getItem('tech-expo-player-name');
@@ -69,9 +72,15 @@ export default function App() {
   }, [setEducationalProductId]);
 
   const requestGameStart = useCallback((chosenMode: GameMode) => {
-    if (!playerName.trim()) return;
-    startGame(chosenMode);
-  }, [playerName, startGame]);
+    setPendingGameMode(chosenMode);
+    setShowRegistration(true);
+  }, []);
+
+  const handleRegistrationVerified = useCallback((details: RegistrationDetails) => {
+    setPlayerName(details.fullName);
+    setShowRegistration(false);
+    startGame(pendingGameMode);
+  }, [pendingGameMode, startGame]);
 
   const handleProductPreviewClick = useCallback((id: SaaSProductId) => {
     if (id === 2) {
@@ -106,8 +115,6 @@ export default function App() {
         {status === 'landing' && (
           <LandingScreen
             highScore={highScore}
-            playerName={playerName}
-            onPlayerNameChange={setPlayerName}
             onStartGame={requestGameStart}
             onProductPreviewClick={handleProductPreviewClick}
             onOpenCodex={() => openCodexWithProduct(0)}
@@ -220,6 +227,14 @@ export default function App() {
         {/* High Score Leaderboard Modal */}
         {showLeaderboard && (
           <LeaderboardModal onClose={() => setShowLeaderboard(false)} />
+        )}
+
+        {showRegistration && (
+          <RegistrationModal
+            initialName={playerName}
+            onClose={() => setShowRegistration(false)}
+            onVerified={handleRegistrationVerified}
+          />
         )}
 
       </main>

@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'motion/react';
-import { Play, Sparkles, Trophy, BookOpen, UserRound } from 'lucide-react';
+import { Play, Sparkles, Trophy, BookOpen } from 'lucide-react';
 import { GameMode } from '../types/game';
 import { SAAS_PRODUCTS } from '../data/products';
 import { SaaSLogo } from './SaaSLogo';
@@ -8,8 +8,6 @@ import techLogo from '../../assets/image/tech-logo.png';
 
 interface LandingScreenProps {
   highScore: number;
-  playerName: string;
-  onPlayerNameChange: (playerName: string) => void;
   onStartGame: (mode: GameMode) => void;
   onProductPreviewClick: (productId: typeof SAAS_PRODUCTS[number]['id']) => void;
   onOpenCodex: () => void;
@@ -18,8 +16,6 @@ interface LandingScreenProps {
 
 export const LandingScreen: React.FC<LandingScreenProps> = ({
   highScore,
-  playerName,
-  onPlayerNameChange,
   onStartGame,
   onProductPreviewClick,
   onOpenCodex,
@@ -80,25 +76,8 @@ export const LandingScreen: React.FC<LandingScreenProps> = ({
           transition={{ delay: 0.3 }}
           className="grid w-full max-w-md grid-cols-1 gap-3 pt-4"
         >
-          <label className="flex min-h-12 items-center gap-3 rounded-xl border border-[#d9e8df] bg-[#f5fff8] px-4 text-left shadow-sm">
-            <UserRound className="h-4 w-4 shrink-0 text-black/60" />
-            <span className="shrink-0 text-[10px] font-bold uppercase tracking-widest text-black/60">
-              Player
-            </span>
-            <input
-              type="text"
-              value={playerName}
-              onChange={(event) => onPlayerNameChange(event.target.value)}
-              maxLength={24}
-              autoComplete="nickname"
-              aria-label="Player name for leaderboard score"
-              placeholder="Enter your name"
-              className="min-w-0 flex-1 bg-transparent py-3 text-sm font-bold text-black outline-none placeholder:font-medium placeholder:text-black/35"
-            />
-          </label>
           <button
             onClick={() => onStartGame('timed')}
-            disabled={!playerName.trim()}
             className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#1b9e4b] px-8 py-4 text-xs font-bold uppercase tracking-widest text-black shadow-2xl transition-colors hover:bg-[#17903f] disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Play className="h-4 w-4 fill-black" />

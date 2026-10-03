@@ -1,5 +1,16 @@
+import { randomUUID } from 'node:crypto';
 import dns from 'node:dns';
 import { MongoClient, ServerApiVersion } from 'mongodb';
+import {
+  cleanText,
+  deliverWhatsAppOtp,
+  generateOtp,
+  hashOtp,
+  normalizeWhatsAppNumber,
+  otpMatches,
+  OTP_EXPIRY_MS,
+  OTP_RESEND_COOLDOWN_SECONDS,
+} from '../lib/otp';
 
 type ApiRequest = {
   method?: string;
@@ -18,6 +29,19 @@ type RequestBody = Record<string, unknown>;
 const mongoUri = process.env.MONGODB_URI?.trim();
 const mongoDbName = process.env.MONGODB_DB_NAME ?? 'saas_crush';
 const mongoCollectionName = process.env.MONGODB_COLLECTION_NAME ?? 'expo_leads';
+const mongoOtpCollectionName = process.env.MONGODB_OTP_COLLECTION_NAME ?? 'otp_challenges';
+
+type OtpChallenge = {
+  _id: string;
+  fullName: string;
+  businessName: string;
+  hasGst: 'yes' | 'no';
+  whatsappNumber: string;
+  otpHash: string;
+  attempts: number;
+  createdAt: Date;
+  expiresAt: Date;
+};
 
 const configuredDnsServers = process.env.MONGODB_DNS_SERVERS
   ?.split(',')
@@ -65,8 +89,9 @@ async function getLeadsCollection() {
   return client.db(mongoDbName).collection(mongoCollectionName);
 }
 
-function cleanText(value: unknown) {
-  return typeof value === 'string' ? value.trim() : '';
+async function getOtpCollection() {
+  const client = await getMongoClient();
+  return client.db(mongoDbName).collection<OtpChallenge>(mongoOtpCollectionName);
 }
 
 function requestBody(req: ApiRequest): RequestBody {
@@ -95,6 +120,110 @@ function databaseErrorMessage() {
 function userAgent(req: ApiRequest) {
   const value = req.headers?.['user-agent'];
   return typeof value === 'string' ? value : '';
+}
+
+function validateRegistration(body: RequestBody) {
+  const fullName = cleanText(body.fullName);
+  const businessName = cleanText(body.businessName);
+  const hasGst = body.hasGst === 'yes' || body.hasGst === 'no' ? body.hasGst : '';
+  const whatsappNumber = normalizeWhatsAppNumber(
+    body.whatsappNumber,
+    cleanText(process.env.WHATSAPP_COUNTRY_CODE) || '91'
+  );
+
+  if (!fullName || fullName.length > 100) {
+    return { error: 'Please enter your full name.' };
+  }
+  if (!businessName || businessName.length > 120) {
+    return { error: 'Please enter your business name.' };
+  }
+  if (!hasGst) {
+    return { error: 'Please choose whether you have GST.' };
+  }
+  if (!whatsappNumber) {
+    return { error: 'Please enter a valid WhatsApp number.' };
+  }
+
+  return { fullName, businessName, hasGst, whatsappNumber } as const;
+}
+
+async function handleSendOtp(req: ApiRequest, res: ApiResponse) {
+  const registration = validateRegistration(requestBody(req));
+  if ('error' in registration) {
+    return res.status(400).json({ message: registration.error });
+  }
+
+  const challengeId = randomUUID();
+  const otp = generateOtp();
+  const now = new Date();
+  const challenge: OtpChallenge = {
+    _id: challengeId,
+    ...registration,
+    otpHash: hashOtp(challengeId, otp),
+    attempts: 0,
+    createdAt: now,
+    expiresAt: new Date(now.getTime() + OTP_EXPIRY_MS),
+  };
+
+  try {
+    const delivery = await deliverWhatsAppOtp(registration.whatsappNumber, otp, false);
+    const collection = await getOtpCollection();
+    await collection.replaceOne({ _id: challengeId }, challenge, { upsert: true });
+
+    return res.json({
+      challengeId,
+      resendAfterSeconds: OTP_RESEND_COOLDOWN_SECONDS,
+      ...(delivery.development ? { developmentOtp: delivery.devOtp } : {}),
+    });
+  } catch (error) {
+    console.error('[otp] Vercel send failed', error);
+    return res.status(503).json({ message: 'Could not send the WhatsApp OTP. Please try again.' });
+  }
+}
+
+async function handleVerifyOtp(req: ApiRequest, res: ApiResponse) {
+  const body = requestBody(req);
+  const challengeId = cleanText(body.challengeId);
+  const otp = cleanText(body.otp);
+
+  if (!challengeId || !/^\d{6}$/.test(otp)) {
+    return res.status(400).json({ message: 'Please enter the 6-digit OTP.' });
+  }
+
+  try {
+    const otpCollection = await getOtpCollection();
+    const challenge = await otpCollection.findOne({ _id: challengeId });
+    if (!challenge || challenge.expiresAt.getTime() < Date.now()) {
+      return res.status(400).json({ message: 'This OTP has expired. Please request a new one.' });
+    }
+    if (challenge.attempts >= 5) {
+      return res.status(429).json({ message: 'Too many attempts. Please request a new OTP.' });
+    }
+
+    if (!otpMatches(challengeId, otp, challenge.otpHash)) {
+      await otpCollection.updateOne({ _id: challengeId }, { $inc: { attempts: 1 } });
+      return res.status(400).json({ message: 'That OTP is incorrect. Please try again.' });
+    }
+
+    const lead = {
+      recordType: 'registration',
+      fullName: challenge.fullName,
+      businessName: challenge.businessName,
+      hasGst: challenge.hasGst,
+      whatsappNumber: challenge.whatsappNumber,
+      verifiedAt: new Date(),
+      createdAt: challenge.createdAt,
+      userAgent: userAgent(req),
+    };
+    const collection = await getLeadsCollection();
+    const result = await collection.insertOne(lead);
+    await otpCollection.deleteOne({ _id: challengeId });
+
+    return res.json({ id: result.insertedId.toString(), fullName: challenge.fullName });
+  } catch (error) {
+    console.error('[otp] Vercel verify failed', error);
+    return res.status(503).json({ message: 'Could not verify the OTP right now. Please try again.' });
+  }
 }
 
 async function handleLeaderboard(res: ApiResponse) {
@@ -200,6 +329,14 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
 
   if (pathname === '/api/scores' && method === 'POST') {
     return handleScore(req, res);
+  }
+
+  if (pathname === '/api/otp/send' && method === 'POST') {
+    return handleSendOtp(req, res);
+  }
+
+  if (pathname === '/api/otp/verify' && method === 'POST') {
+    return handleVerifyOtp(req, res);
   }
 
   return res.status(404).json({ message: 'API route not found.' });
