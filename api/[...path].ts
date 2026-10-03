@@ -154,7 +154,7 @@ function mapAdminRecord(record: any) {
     fullName: record.fullName ?? '',
     businessName: record.businessName ?? '',
     industry: record.industry ?? '',
-    hasGst: record.hasGst ?? 'no',
+    ...(record.hasGst ? { hasGst: record.hasGst } : {}),
     whatsappNumber: record.whatsappNumber ?? '',
     ...(typeof record.score === 'number' ? { score: record.score } : {}),
     ...(typeof record.maxCombo === 'number' ? { maxCombo: record.maxCombo } : {}),
@@ -213,9 +213,16 @@ async function handleSendOtp(req: ApiRequest, res: ApiResponse) {
   };
 
   try {
-    const delivery = await deliverWhatsAppOtp(registration.whatsappNumber, otp, false);
     const collection = await getOtpCollection();
     await collection.replaceOne({ _id: challengeId }, challenge, { upsert: true });
+
+    let delivery;
+    try {
+      delivery = await deliverWhatsAppOtp(registration.whatsappNumber, otp, false);
+    } catch (error) {
+      await collection.deleteOne({ _id: challengeId });
+      throw error;
+    }
 
     return res.json({
       challengeId,
@@ -323,7 +330,10 @@ async function handleAdminLeads(req: ApiRequest, res: ApiResponse) {
     const records = await collection
       .find({
         fullName: { $type: 'string', $ne: '' },
-        businessName: { $type: 'string', $ne: '' },
+        $or: [
+          { businessName: { $type: 'string', $ne: '' } },
+          { score: { $type: 'number' } },
+        ],
       })
       .project({
         fullName: 1,

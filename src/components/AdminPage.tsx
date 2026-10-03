@@ -7,7 +7,7 @@ interface AdminLead {
   fullName: string;
   businessName: string;
   industry: string;
-  hasGst: 'yes' | 'no';
+  hasGst?: 'yes' | 'no';
   whatsappNumber: string;
   score?: number;
   maxCombo?: number;
@@ -125,7 +125,7 @@ export const AdminPage: React.FC = () => {
               <SummaryCard label="Records" value={leads.length.toLocaleString()} />
               <SummaryCard label="Scores" value={leads.filter((lead) => typeof lead.score === 'number').length.toLocaleString()} />
               <SummaryCard label="GST yes" value={leads.filter((lead) => lead.hasGst === 'yes').length.toLocaleString()} />
-              <SummaryCard label="Categories" value={new Set(leads.map((lead) => lead.industry)).size.toLocaleString()} />
+              <SummaryCard label="Categories" value={new Set(leads.map((lead) => lead.industry).filter(Boolean)).size.toLocaleString()} />
             </div>
 
             {leads.length === 0 ? (
@@ -146,9 +146,10 @@ export const AdminPage: React.FC = () => {
                       </span>
                     </div>
                     <dl className="mt-4 grid grid-cols-2 gap-x-3 gap-y-3 text-xs">
-                      <DataPoint label="Category" value={lead.industry} wide />
-                      <DataPoint label="GST" value={lead.hasGst === 'yes' ? 'Yes' : 'No'} />
-                      <DataPoint label="WhatsApp" value={lead.whatsappNumber} />
+                      <DataPoint label="Business name" value={lead.businessName || '—'} wide />
+                      <DataPoint label="Category" value={lead.industry || '—'} wide />
+                      <DataPoint label="GST" value={lead.hasGst === 'yes' ? 'Yes' : lead.hasGst === 'no' ? 'No' : '—'} />
+                      <DataPoint label="WhatsApp number" value={lead.whatsappNumber || '—'} />
                       <DataPoint label="Score" value={typeof lead.score === 'number' ? lead.score.toLocaleString() : 'Not played'} />
                       <DataPoint label="Mode" value={lead.mode || '—'} />
                       <DataPoint label="Created" value={formatDate(lead.createdAt)} />

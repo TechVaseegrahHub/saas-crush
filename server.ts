@@ -72,6 +72,7 @@ app.get('/favicon.ico', (_req, res) => {
 });
 
 let mongoClient: MongoClient | null = null;
+let mongoClientPromise: Promise<MongoClient> | null = null;
 // In-memory fallback is intentionally limited to local development.
 const inMemoryRecords: any[] = [];
 const inMemoryOtpChallenges = new Map<string, OtpChallenge>();
@@ -89,26 +90,59 @@ type OtpChallenge = {
   expiresAt: Date;
 };
 
-async function getLeadsCollection() {
+async function getMongoClient() {
   if (!mongoUri) {
     throw new Error('MONGODB_URI is not configured.');
   }
 
-  if (!mongoClient) {
+  if (!mongoClientPromise) {
     const client = new MongoClient(mongoUri, {
       serverApi: {
         version: ServerApiVersion.v1,
         strict: true,
         deprecationErrors: true,
       },
-      connectTimeoutMS: 10000,
-      serverSelectionTimeoutMS: 10000,
+      connectTimeoutMS: 15000,
+      serverSelectionTimeoutMS: 15000,
     });
-    await client.connect();
-    mongoClient = client;
+
+    mongoClientPromise = client.connect().then(() => {
+      mongoClient = client;
+      return client;
+    }).catch((error) => {
+      mongoClientPromise = null;
+      throw error;
+    });
   }
 
-  return mongoClient.db(mongoDbName).collection(mongoCollectionName);
+  return mongoClientPromise;
+}
+
+async function resetMongoClient() {
+  const client = mongoClient;
+  mongoClient = null;
+  mongoClientPromise = null;
+  await client?.close().catch(() => undefined);
+}
+
+async function getLeadsCollection() {
+  const client = await getMongoClient();
+  return client.db(mongoDbName).collection(mongoCollectionName);
+}
+
+async function withReadRetry<T>(query: (collection: any) => Promise<T>) {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await query(await getLeadsCollection());
+    } catch (error) {
+      lastError = error;
+      await resetMongoClient();
+    }
+  }
+
+  throw lastError;
 }
 
 function databaseErrorMessage() {
@@ -131,7 +165,7 @@ function mapAdminRecord(record: any) {
     fullName: record.fullName ?? '',
     businessName: record.businessName ?? '',
     industry: record.industry ?? '',
-    hasGst: record.hasGst ?? 'no',
+    ...(record.hasGst ? { hasGst: record.hasGst } : {}),
     whatsappNumber: record.whatsappNumber ?? '',
     ...(typeof record.score === 'number' ? { score: record.score } : {}),
     ...(typeof record.maxCombo === 'number' ? { maxCombo: record.maxCombo } : {}),
@@ -143,25 +177,8 @@ function mapAdminRecord(record: any) {
 }
 
 async function getOtpCollection() {
-  if (!mongoUri) {
-    throw new Error('MONGODB_URI is not configured.');
-  }
-
-  if (!mongoClient) {
-    const client = new MongoClient(mongoUri, {
-      serverApi: {
-        version: ServerApiVersion.v1,
-        strict: true,
-        deprecationErrors: true,
-      },
-      connectTimeoutMS: 10000,
-      serverSelectionTimeoutMS: 10000,
-    });
-    await client.connect();
-    mongoClient = client;
-  }
-
-  return mongoClient.db(mongoDbName).collection<OtpChallenge>(mongoOtpCollectionName);
+  const client = await getMongoClient();
+  return client.db(mongoDbName).collection<OtpChallenge>(mongoOtpCollectionName);
 }
 
 function validateRegistration(body: any) {
@@ -253,12 +270,19 @@ app.post('/api/otp/send', async (req, res) => {
   };
 
   try {
-    const delivery = await deliverWhatsAppOtp(
-      registration.whatsappNumber,
-      otp,
-      allowInMemoryFallback
-    );
     await saveOtpChallenge(challenge);
+
+    let delivery;
+    try {
+      delivery = await deliverWhatsAppOtp(
+        registration.whatsappNumber,
+        otp,
+        allowInMemoryFallback
+      );
+    } catch (error) {
+      await removeOtpChallenge(challengeId);
+      throw error;
+    }
 
     return res.json({
       challengeId,
@@ -329,8 +353,7 @@ app.post('/api/otp/verify', async (req, res) => {
 
 app.get('/api/health', async (_req, res) => {
   try {
-    const collection = await getLeadsCollection();
-    await collection.findOne({}, { projection: { _id: 1 } });
+    await withReadRetry((collection) => collection.findOne({}, { projection: { _id: 1 } }));
     return res.json({ ok: true, database: 'connected' });
   } catch (error) {
     console.error('[database] Health check failed', error);
@@ -344,8 +367,7 @@ app.get('/api/health', async (_req, res) => {
 app.get('/api/leaderboard', async (_req, res) => {
   try {
     try {
-      const collection = await getLeadsCollection();
-      const records = await collection
+      const records = await withReadRetry<any[]>((collection) => collection
         .find(
           {
             fullName: { $type: 'string', $ne: '' },
@@ -362,7 +384,7 @@ app.get('/api/leaderboard', async (_req, res) => {
         )
         .sort({ score: -1, updatedAt: -1, createdAt: -1 })
         .limit(25)
-        .toArray();
+        .toArray());
 
       return res.json({
         entries: records.map((record) => ({
@@ -407,11 +429,13 @@ app.get('/api/admin/leads', async (req, res) => {
 
   try {
     try {
-      const collection = await getLeadsCollection();
-      const records = await collection
+      const records = await withReadRetry<any[]>((collection) => collection
         .find({
           fullName: { $type: 'string', $ne: '' },
-          businessName: { $type: 'string', $ne: '' },
+          $or: [
+            { businessName: { $type: 'string', $ne: '' } },
+            { score: { $type: 'number' } },
+          ],
         })
         .project({
           fullName: 1,
@@ -429,7 +453,7 @@ app.get('/api/admin/leads', async (req, res) => {
         })
         .sort({ createdAt: -1 })
         .limit(200)
-        .toArray();
+        .toArray());
 
       return res.json({ entries: records.map(mapAdminRecord) });
     } catch (error) {
@@ -439,7 +463,7 @@ app.get('/api/admin/leads', async (req, res) => {
       }
 
       const records = inMemoryRecords
-        .filter((record) => record.fullName && record.businessName)
+        .filter((record) => record.fullName && (record.businessName || typeof record.score === 'number'))
         .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
         .slice(0, 200);
 
@@ -586,6 +610,6 @@ console.log(`SaaS Crush running at http://localhost:${activePort}`);
 
 process.on('SIGINT', async () => {
   httpServer?.close();
-  await mongoClient?.close();
+  await resetMongoClient();
   process.exit(0);
 });

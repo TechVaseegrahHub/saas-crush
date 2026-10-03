@@ -24,10 +24,15 @@ The server loads .env.local and .env; it does not load .env.example.
 
 ## Production
 
-The live deployment must define the MongoDB variables in `.env.example`. For
+The live deployment must define the MongoDB, WhatsApp, and admin variables in
+`.env.example` (copy the values into the deployment provider's environment
+settings; `.env` is not uploaded automatically). For
 MongoDB Atlas, add the deployment's outbound network access to the Atlas IP
 access list. Check `/api/health` after deploying; it should return
 `{"ok":true,"database":"connected"}` before testing score saving.
+
+Set `ADMIN_PASSWORD` before opening `/admin`. The admin page uses it to protect
+customer data, including WhatsApp numbers.
 
 Build the frontend and start the Express server so the `/api/leaderboard` and
 `/api/scores` routes are available in the deployed app:
